@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LiveKit Face Recognition - Join Room</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            max-width: 800px;
+            width: 100%;
+            text-align: center;
+        }
+
+        .header {
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            color: #333;
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 1.1rem;
+            line-height: 1.6;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+            text-align: left;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        input {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 16px;
+            transition: border-color 0.3s ease;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 10px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            width: 100%;
+            margin-top: 10px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            font-weight: 500;
+        }
+
+        .status.connecting {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .video-container {
+            margin-top: 30px;
+            display: none;
+        }
+
+        .local-video {
+            width: 100%;
+            max-width: 400px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .instructions {
+            background: #f8f9ff;
+            padding: 25px;
+            border-radius: 15px;
+            margin-top: 30px;
+            text-align: left;
+        }
+
+        .instructions h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 1.3rem;
+        }
+
+        .instructions ul {
+            color: #555;
+            line-height: 1.8;
+        }
+
+        .instructions li {
+            margin-bottom: 8px;
+        }
+
+        .controls {
+            margin-top: 20px;
+            display: none;
+        }
+
+        .controls button {
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 0 10px;
+        }
+
+        .controls button:hover {
+            background: #c82333;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 20px;
+                margin: 10px;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎯 LiveKit Face Recognition</h1>
+            <p>Join the room to test face recognition capabilities</p>
+        </div>
+
+        <form id="joinForm">
+            <div class="form-group">
+                <label for="serverUrl">LiveKit Server URL</label>
+                <input type="text" id="serverUrl" value="wss://hackathon-q84feug6.livekit.cloud" placeholder="ws://localhost:7880">
+            </div>
+
+            <div class="form-group">
+                <label for="roomName">Room Name</label>
+                <input type="text" id="roomName" value="face-recognition-room" placeholder="face-recognition-room">
+            </div>
+
+            <div class="form-group">
+                <label for="participantName">Your Name</label>
+                <input type="text" id="participantName" placeholder="Enter your name" required>
+            </div>
+
+            <div class="form-group">
+                <label for="token">Access Token</label>
+                <input type="text" id="token" placeholder="Your access token (optional - will be generated if empty)">
+            </div>
+
+            <button type="submit" class="btn" id="joinBtn">Join Room</button>
+        </form>
+
+        <div id="status" class="status" style="display: none;"></div>
+
+        <div class="video-container" id="videoContainer">
+            <h3>Your Video Feed</h3>
+            <video id="localVideo" class="local-video" autoplay muted playsinline></video>
+            <div class="controls" id="controls">
+                <button id="toggleVideo">Turn Off Video</button>
+                <button id="toggleAudio">Turn Off Audio</button>
+                <button id="leaveRoom">Leave Room</button>
+            </div>
+        </div>
+
+        <div class="instructions">
+            <h3>📋 Instructions</h3>
+            <ul>
+                <li><strong>Step 1:</strong> Make sure your Python face recognition system is running</li>
+                <li><strong>Step 2:</strong> Enter your name and click "Join Room"</li>
+                <li><strong>Step 3:</strong> Allow camera access when prompted</li>
+                <li><strong>Step 4:</strong> Position your face in view of the camera</li>
+                <li><strong>Step 5:</strong> The Python system will detect and match faces in real-time</li>
+                <li><strong>Note:</strong> Check the Python console for face match notifications</li>
+            </ul>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/livekit-client/1.15.13/livekit-client.umd.min.js"></script>
+    <script>
+        let LK = null;
+        let Room, RoomEvent, createLocalVideoTrack, createLocalAudioTrack, VideoPresets;
+
+        function loadScript(src) {
+            return new Promise((resolve, reject) => {
+                const s = document.createElement('script');
+                s.src = src;
+                s.async = true;
+                s.onload = () => resolve(true);
+                s.onerror = () => reject(new Error('Failed to load ' + src));
+                document.head.appendChild(s);
+            });
+        }
+
+        async function ensureLiveKitLoaded() {
+            LK = window.LivekitClient || window.LiveKitClient || null;
+            if (!LK) {
+                const candidates = [
+                    'https://cdn.jsdelivr.net/npm/livekit-client@1.15.13/dist/livekit-client.umd.min.js',
+                    'https://unpkg.com/livekit-client@1.15.13/dist/livekit-client.umd.min.js',
+                    'https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js',
+                    'https://unpkg.com/livekit-client/dist/livekit-client.umd.min.js'
+                ];
+                for (const url of candidates) {
+                    try {
+                        await loadScript(url);
+                        LK = window.LivekitClient || window.LiveKitClient || null;
+                        if (LK) break;
+                    } catch (e) {
+                        // try next
+                    }
+                }
+            }
+
+            if (!LK) {
+                console.error('LiveKit client library failed to load');
+                return false;
+            }
+
+            ({ Room, RoomEvent, createLocalVideoTrack, createLocalAudioTrack, VideoPresets } = LK);
+            return true;
+        }
+
+        let room = null;
+        let localVideoTrack = null;
+        let localAudioTrack = null;
+        let currentPlayPromise = null;
+
+        const elements = {
+            form: document.getElementById('joinForm'),
+            status: document.getElementById('status'),
+            videoContainer: document.getElementById('videoContainer'),
+            localVideo: document.getElementById('localVideo'),
+            controls: document.getElementById('controls'),
+            joinBtn: document.getElementById('joinBtn'),
+            toggleVideo: document.getElementById('toggleVideo'),
+            toggleAudio: document.getElementById('toggleAudio'),
+            leaveRoom: document.getElementById('leaveRoom')
+        };
+
+        // 🔹 Fixed video play function with proper error handling
+        async function safeVideoPlay(videoElement) {
+            try {
+                // Cancel any ongoing play promise
+                if (currentPlayPromise) {
+                    await currentPlayPromise.catch(() => {
+                        // Ignore interruption errors
+                    });
+                }
+
+                // Reset video state if needed
+                if (videoElement.readyState < 2) {
+                    await new Promise((resolve) => {
+                        videoElement.addEventListener('loadeddata', resolve, { once: true });
+                    });
+                }
+
+                // Start new play promise
+                currentPlayPromise = videoElement.play();
+                await currentPlayPromise;
+                currentPlayPromise = null;
+                
+                console.log('Video started playing successfully');
+            } catch (error) {
+                currentPlayPromise = null;
+                if (error.name === 'AbortError') {
+                    console.log('Video play was interrupted, this is expected behavior');
+                } else if (error.name === 'NotAllowedError') {
+                    console.log('Video autoplay blocked by browser policy');
+                    showStatus('Please click to start video playback', 'error');
+                } else {
+                    console.error('Video play error:', error);
+                }
+            }
+        }
+
+        // 🔹 Updated generateToken to call backend API
+        async function generateToken(serverUrl, roomName, participantName) {
+            try {
+                const response = await fetch("/api/token", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        room: roomName,
+                        name: participantName
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Token API failed: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+                return data.token;
+            } catch (error) {
+                console.error("Failed to fetch token:", error);
+                throw error;
+            }
+        }
+
+        function showStatus(message, type = 'info') {
+            elements.status.style.display = 'block';
+            elements.status.textContent = message;
+            elements.status.className = `status ${type}`;
+        }
+
+        function hideStatus() {
+            elements.status.style.display = 'none';
+        }
+
+        async function joinRoom(serverUrl, roomName, participantName, token) {
+            try {
+                showStatus('Connecting to room...', 'connecting');
+                elements.joinBtn.disabled = true;
+
+                room = new Room();
+
+                room.on(RoomEvent.Connected, () => {
+                    showStatus('Connected to room successfully!', 'connected');
+                    console.log('Connected to room:', room.name);
+                });
+
+                room.on(RoomEvent.Disconnected, (reason) => {
+                    showStatus(`Disconnected: ${reason}`, 'error');
+                    resetUI();
+                });
+
+                room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+                    console.log('Track subscribed:', track.kind, 'from', participant.identity);
+                });
+
+                if (!token) {
+                    token = await generateToken(serverUrl, roomName, participantName);
+                }
+
+                await room.connect(serverUrl, token);
+                await publishLocalTracks();
+
+                elements.videoContainer.style.display = 'block';
+                elements.controls.style.display = 'block';
+
+            } catch (error) {
+                console.error('Failed to join room:', error);
+                showStatus(`Failed to join room: ${error.message}`, 'error');
+                elements.joinBtn.disabled = false;
+            }
+        }
+
+        async function publishLocalTracks() {
+            try {
+                localVideoTrack = await createLocalVideoTrack({
+                    resolution: VideoPresets.h720.resolution,
+                    facingMode: 'user'
+                });
+                localAudioTrack = await createLocalAudioTrack();
+
+                // 🔹 Fixed video element replacement with proper error handling
+                const videoElement = localVideoTrack.attach();
+                
+                // Ensure proper video element setup
+                videoElement.id = 'localVideo';
+                videoElement.className = 'local-video';
+                videoElement.muted = true;
+                videoElement.autoplay = true;
+                videoElement.playsInline = true;
+                
+                // Replace the existing video element
+                const oldVideo = elements.localVideo;
+                oldVideo.parentNode.replaceChild(videoElement, oldVideo);
+                elements.localVideo = videoElement;
+
+                // Wait a moment before attempting to play
+                setTimeout(async () => {
+                    await safeVideoPlay(videoElement);
+                }, 100);
+
+                await room.localParticipant.publishTrack(localVideoTrack);
+                await room.localParticipant.publishTrack(localAudioTrack);
+
+                console.log('Local tracks published successfully');
+            } catch (error) {
+                console.error('Failed to publish local tracks:', error);
+                showStatus(`Failed to access camera/microphone: ${error.message}`, 'error');
+            }
+        }
+
+        function resetUI() {
+            elements.videoContainer.style.display = 'none';
+            elements.controls.style.display = 'none';
+            elements.joinBtn.disabled = false;
+            
+            // 🔹 Proper cleanup of video elements
+            if (elements.localVideo) {
+                elements.localVideo.pause();
+                elements.localVideo.srcObject = null;
+                elements.localVideo.src = '';
+            }
+
+            // Cancel any ongoing play promise
+            if (currentPlayPromise) {
+                currentPlayPromise.catch(() => {});
+                currentPlayPromise = null;
+            }
+
+            if (localVideoTrack) {
+                localVideoTrack.stop();
+                localVideoTrack = null;
+            }
+            if (localAudioTrack) {
+                localAudioTrack.stop();
+                localAudioTrack = null;
+            }
+
+            room = null;
+        }
+
+        elements.form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const ready = await ensureLiveKitLoaded();
+            if (!ready) {
+                showStatus('Failed to load LiveKit client. Check network and try again.', 'error');
+                return;
+            }
+
+            const serverUrl = document.getElementById('serverUrl').value.trim();
+            const roomName = document.getElementById('roomName').value.trim();
+            const participantName = document.getElementById('participantName').value.trim();
+            const token = document.getElementById('token').value.trim();
+
+            if (!serverUrl || !roomName || !participantName) {
+                showStatus('Please fill in all required fields', 'error');
+                return;
+            }
+
+            hideStatus();
+            await joinRoom(serverUrl, roomName, participantName, token || null);
+        });
+
+        elements.toggleVideo.addEventListener('click', async () => {
+            if (localVideoTrack && room) {
+                try {
+                    if (localVideoTrack.isMuted) {
+                        await localVideoTrack.unmute();
+                        elements.toggleVideo.textContent = 'Turn Off Video';
+                    } else {
+                        await localVideoTrack.mute();
+                        elements.toggleVideo.textContent = 'Turn On Video';
+                    }
+                } catch (error) {
+                    console.error('Error toggling video:', error);
+                }
+            }
+        });
+
+        elements.toggleAudio.addEventListener('click', async () => {
+            if (localAudioTrack && room) {
+                try {
+                    if (localAudioTrack.isMuted) {
+                        await localAudioTrack.unmute();
+                        elements.toggleAudio.textContent = 'Turn Off Audio';
+                    } else {
+                        await localAudioTrack.mute();
+                        elements.toggleAudio.textContent = 'Turn On Audio';
+                    }
+                } catch (error) {
+                    console.error('Error toggling audio:', error);
+                }
+            }
+        });
+
+        elements.leaveRoom.addEventListener('click', async () => {
+            try {
+                if (room) await room.disconnect();
+            } catch (error) {
+                console.error('Error leaving room:', error);
+            }
+            resetUI();
+            hideStatus();
+        });
+
+        // 🔹 Add click handler for manual video start (fallback for autoplay issues)
+        document.addEventListener('click', async (e) => {
+            if (elements.localVideo && elements.localVideo.paused) {
+                await safeVideoPlay(elements.localVideo);
+            }
+        }, { once: true });
+
+        window.addEventListener('load', async () => {
+            await ensureLiveKitLoaded();
+            const names = ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve', 'Frank', 'Grace', 'Henry'];
+            const randomName = names[Math.floor(Math.random() * names.length)] + Math.floor(Math.random() * 100);
+            document.getElementById('participantName').value = randomName;
+        });
+    </script>
+
+</body>
+</html>
