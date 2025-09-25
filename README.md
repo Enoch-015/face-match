@@ -48,6 +48,8 @@ Each `/api/match` POST & WebSocket broadcast contains:
 | `SS_POLL_INTERVAL_SECONDS` | `5` | Frequency of the subscription manager loop checks. |
 | `SS_PROBE_DURATION_SECONDS` | `5` | While probing, stay subscribed up to this long if no match yet before giving up. |
 | `SS_ACTIVE_GRACE_SECONDS` | `30` | After last match, remain subscribed this many seconds (grace period) before going inactive. |
+| `SS_BACKOFF_MAX_EXP` | `4` | Maximum exponent for probe backoff (effective wait = SS_RETRY_SECONDS * 2^exp). |
+| `SS_ADAPTIVE_GRACE` | `true` | Enable adaptive extension of active grace based on match confidence. |
 
 ## Recent Improvements
 
@@ -60,6 +62,8 @@ Each `/api/match` POST & WebSocket broadcast contains:
 7. Early synchronous processing of first frames for faster initial matches.
 8. Selective subscription option: automatically unsubscribe inactive participant video tracks to reduce bandwidth/CPU and periodically probe them again.
 9. Probe state machine (inactive → probing → active): probing unsubscribes quickly if no match; active tracks keep streaming as long as matches occur within grace window.
+10. Exponential backoff for probe attempts after repeated no‑match probes.
+11. Adaptive grace extension: higher-confidence matches can extend active grace up to 2x base.
 
 ## Running
 

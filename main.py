@@ -11,6 +11,7 @@ from datetime import datetime
 import json
 import aiohttp
 import threading
+import math
 from concurrent.futures import ThreadPoolExecutor
 
 # Import LiveKit components
@@ -46,21 +47,34 @@ class LiveKitFaceRecognizer:
         self.track_tasks = {}
         self.track_owner = {}  # track_sid -> participant_sid
         self.last_match_time = {}
-        self.match_cooldown_seconds = int(os.getenv("MATCH_COOLDOWN_SECONDS", "3"))
+        self.match_cooldown_seconds = self._parse_int_env("MATCH_COOLDOWN_SECONDS", 3)
         self.ref_lock = threading.Lock()
         # Selective subscription controls
         self.selective_subscribe = os.getenv("SELECTIVE_SUBSCRIBE", "false").lower() in {"1","true","yes"}
         self.pub_last_activity: Dict[str, float] = {}  # publication.sid -> last match timestamp (epoch)
         self.pub_state: Dict[str, str] = {}  # publication.sid -> 'subscribed' | 'unsubscribed' | 'pending'
-        self.ss_inactive_seconds = int(os.getenv("SS_INACTIVE_SECONDS", "15"))  # after this with no match -> unsubscribe
-        self.ss_retry_seconds = int(os.getenv("SS_RETRY_SECONDS", "10"))  # after unsubscribe wait before resubscribe attempt
+        self.ss_inactive_seconds = self._parse_int_env("SS_INACTIVE_SECONDS", 15)  # after this with no match -> unsubscribe
+        self.ss_retry_seconds = self._parse_int_env("SS_RETRY_SECONDS", 10)  # after unsubscribe wait before resubscribe attempt
         self.ss_poll_interval = float(os.getenv("SS_POLL_INTERVAL_SECONDS", "5"))
         self.subscription_manager_task: Optional[asyncio.Task] = None
         # Probe-mode refinements
-        self.ss_probe_duration = float(os.getenv("SS_PROBE_DURATION_SECONDS", "5"))  # how long to stay subscribed if no match yet
-        self.ss_active_grace = float(os.getenv("SS_ACTIVE_GRACE_SECONDS", "30"))  # remain subscribed this long after last match
+        # Robust numeric parsing (allow trailing comments) via helper
+        self.ss_probe_duration = self._parse_float_env("SS_PROBE_DURATION_SECONDS", 5.0)
+        self.ss_active_grace_base = self._parse_float_env("SS_ACTIVE_GRACE_SECONDS", 30.0)  # base grace; may adapt
+        self.ss_active_grace = self.ss_active_grace_base
         self.pub_subscribed_at: Dict[str, float] = {}  # publication.sid -> timestamp when (re)subscribed
         self.pub_last_probe: Dict[str, float] = {}  # publication.sid -> last time we probed (unsub time)
+        self.pub_backoff_exp: Dict[str, int] = {}  # exponential backoff exponent per sid
+        self.ss_backoff_max_exp = self._parse_int_env("SS_BACKOFF_MAX_EXP", 4)  # cap exponent (2^exp * retry_seconds)
+        self.adaptive_grace_enabled = os.getenv("SS_ADAPTIVE_GRACE", "true").lower() in {"1","true","yes"}
+        # Metrics counters
+        self.metrics = {
+            "probes_started": 0,
+            "probes_abandoned": 0,
+            "probes_success": 0,
+            "subscriptions_active": 0,
+            "state_transitions": 0,
+        }
             
         # Load reference face
         self.load_reference_face(reference_image_path)
@@ -72,14 +86,14 @@ class LiveKitFaceRecognizer:
         self._ref_mtime = os.path.getmtime(reference_image_path) if os.path.exists(reference_image_path) else 0
         self._last_reload_check = 0.0
         # Concurrency limiter for frame processing
-        self.max_parallel = int(os.getenv("MAX_PARALLEL_FRAMES", "4"))
+        self.max_parallel = self._parse_int_env("MAX_PARALLEL_FRAMES", 4)
         self.frame_semaphore = asyncio.Semaphore(self.max_parallel)
         # Performance tuning parameters
-        self.downscale_width = int(os.getenv("FRAME_DOWNSCALE_WIDTH", "640"))
-        self.process_every_n = int(os.getenv("PROCESS_EVERY_N_FRAME", "2"))  # 2 = every other frame
+        self.downscale_width = self._parse_int_env("FRAME_DOWNSCALE_WIDTH", 640)
+        self.process_every_n = self._parse_int_env("PROCESS_EVERY_N_FRAME", 2)  # 2 = every other frame
         if self.process_every_n < 1:
             self.process_every_n = 1
-        self.initial_sync_frames = int(os.getenv("INITIAL_SYNC_FRAMES", "5"))
+        self.initial_sync_frames = self._parse_int_env("INITIAL_SYNC_FRAMES", 5)
         self.track_frame_counters: Dict[str, int] = {}
         self.track_sync_remaining: Dict[str, int] = {}
 
@@ -162,6 +176,7 @@ class LiveKitFaceRecognizer:
             self.pub_state[publication.sid] = 'inactive'
             self.pub_last_activity[publication.sid] = 0.0  # no match yet
             self.pub_last_probe[publication.sid] = 0.0  # allow immediate probe
+            self.pub_backoff_exp[publication.sid] = 0
             logger.info(f"[SS] Video track published (sid={publication.sid}) by {participant.identity}; initialized as inactive")
 
     async def subscription_manager_loop(self):
@@ -186,13 +201,18 @@ class LiveKitFaceRecognizer:
 
                         # State machine: inactive -> probing -> active
                         if state == 'inactive':
-                            # Time to probe?
-                            if (now - last_probe) >= self.ss_retry_seconds:
+                            # Time to probe? apply exponential backoff factor
+                            exp = self.pub_backoff_exp.get(sid, 0)
+                            wait_interval = self.ss_retry_seconds * (2 ** exp)
+                            if wait_interval < self.ss_retry_seconds:
+                                wait_interval = self.ss_retry_seconds
+                            if (now - last_probe) >= wait_interval:
                                 try:
                                     pub.set_subscribed(True)
-                                    self.pub_state[sid] = 'probing'
+                                    self._transition_pub_state(sid, 'probing')
                                     subscribed_at = now
                                     self.pub_subscribed_at[sid] = subscribed_at
+                                    self.metrics["probes_started"] += 1
                                     logger.info(f"[SS] Probing subscribe sid={sid} participant={p.identity}")
                                 except Exception as e:
                                     logger.debug(f"[SS] Probe subscribe failed sid={sid}: {e}")
@@ -202,8 +222,11 @@ class LiveKitFaceRecognizer:
                             if self.ss_probe_duration > 0 and (now - subscribed_at) >= self.ss_probe_duration and last_match < subscribed_at:
                                 try:
                                     pub.set_subscribed(False)
-                                    self.pub_state[sid] = 'inactive'
+                                    self._transition_pub_state(sid, 'inactive')
                                     self.pub_last_probe[sid] = now
+                                    # increase backoff on failed probe
+                                    self.pub_backoff_exp[sid] = min(self.pub_backoff_exp.get(sid, 0) + 1, self.ss_backoff_max_exp)
+                                    self.metrics["probes_abandoned"] += 1
                                     logger.info(f"[SS] Probe ended (no match) sid={sid} -> inactive")
                                 except Exception as e:
                                     logger.debug(f"[SS] Probe unsubscribe failed sid={sid}: {e}")
@@ -212,8 +235,9 @@ class LiveKitFaceRecognizer:
                             if (now - last_match) >= self.ss_active_grace:
                                 try:
                                     pub.set_subscribed(False)
-                                    self.pub_state[sid] = 'inactive'
+                                    self._transition_pub_state(sid, 'inactive')
                                     self.pub_last_probe[sid] = now
+                                    self.pub_backoff_exp[sid] = 0  # reset backoff after active cycle ends
                                     logger.info(f"[SS] Became inactive after grace sid={sid}")
                                 except Exception as e:
                                     logger.debug(f"[SS] Active->inactive unsubscribe failed sid={sid}: {e}")
@@ -253,7 +277,7 @@ class LiveKitFaceRecognizer:
                 now = asyncio.get_event_loop().time()
                 # If we explicitly subscribed via probe logic, state may already be 'probing'
                 if self.pub_state.get(publication.sid) not in {'probing','active'}:
-                    self.pub_state[publication.sid] = 'probing'
+                    self._transition_pub_state(publication.sid, 'probing')
                 self.pub_subscribed_at[publication.sid] = now
             
             # Start processing this video track
@@ -507,7 +531,16 @@ class LiveKitFaceRecognizer:
                     if owner == participant.sid:
                         self.pub_last_activity[tsid] = now
                         if self.pub_state.get(tsid) != 'active':
-                            self.pub_state[tsid] = 'active'
+                            self._transition_pub_state(tsid, 'active')
+                            self.metrics["probes_success"] += 1
+                            # successful detection resets backoff & may adapt grace
+                            self.pub_backoff_exp[tsid] = 0
+                            if self.adaptive_grace_enabled:
+                                # Simple adaptation: extend grace modestly for higher confidence,
+                                # clamp between base and 2x base.
+                                boost = (confidence - 0.5) * 10  # scale factor around mid confidence
+                                new_grace = self.ss_active_grace_base * (1 + max(0, min(0.5, boost)))
+                                self.ss_active_grace = max(self.ss_active_grace_base, min(self.ss_active_grace_base * 2, new_grace))
             
             logger.info(f"🎯 FACE MATCH DETECTED! Participant: {participant.identity}, Confidence: {confidence:.2f}")
             
@@ -586,6 +619,36 @@ class LiveKitFaceRecognizer:
                 await self.subscription_manager_task
             except Exception:
                 pass
+
+    def _parse_float_env(self, key: str, default: float) -> float:
+        raw = os.getenv(key, str(default))
+        # Strip inline comments and whitespace
+        raw = raw.split('#', 1)[0].strip()
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning(f"Env {key} value '{raw}' invalid, using default {default}")
+            return default
+
+    def _parse_int_env(self, key: str, default: int) -> int:
+        raw = os.getenv(key, str(default))
+        raw = raw.split('#', 1)[0].strip()
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning(f"Env {key} value '{raw}' invalid, using default {default}")
+            return default
+
+    def _transition_pub_state(self, sid: str, new_state: str):
+        old = self.pub_state.get(sid)
+        if old == new_state:
+            return
+        self.pub_state[sid] = new_state
+        self.metrics["state_transitions"] += 1
+        if new_state == 'active':
+            self.metrics["subscriptions_active"] += 1
+        if old == 'active' and new_state != 'active':
+            self.metrics["subscriptions_active"] = max(0, self.metrics["subscriptions_active"] - 1)
 
 # Token generation utility
 async def generate_access_token(api_key: str, api_secret: str, room_name: str, participant_identity: str) -> str:
