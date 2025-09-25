@@ -147,6 +147,58 @@
             margin-top: 30px;
             text-align: left;
         }
+        .results-section {
+            margin-top: 40px;
+        }
+        .results-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 18px;
+            margin-top: 18px;
+        }
+        .match-card {
+            position: relative;
+            background: #1e1e24;
+            color: #fff;
+            border-radius: 14px;
+            padding: 10px 10px 50px;
+            box-shadow: 0 6px 16px rgba(0,0,0,0.25);
+            overflow: hidden;
+            min-height: 180px;
+        }
+        .match-card video, .match-card canvas {
+            width: 100%;
+            border-radius: 10px;
+            display: block;
+        }
+        .match-meta {
+            position: absolute;
+            left: 10px;
+            bottom: 8px;
+            right: 10px;
+            font-size: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 6px;
+            pointer-events: none;
+        }
+        .confidence-pill {
+            background: rgba(0,255,0,0.15);
+            color: #4cff4c;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-weight: 600;
+            font-size: 11px;
+        }
+        .timestamp {
+            opacity: 0.8;
+        }
+        .no-matches {
+            font-size: 14px;
+            color: #555;
+            font-style: italic;
+        }
 
         .instructions h3 {
             color: #333;
@@ -178,6 +230,25 @@
             font-size: 16px;
             margin: 0 10px;
         }
+            .modal {
+                position: fixed;
+                top: 0; left: 0; right: 0; bottom: 0;
+                background: rgba(0,0,0,0.6);
+                display: none;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+            }
+            .modal-content {
+                background: #fff;
+                border-radius: 12px;
+                padding: 20px;
+                max-width: 900px;
+                width: 100%;
+            }
+            .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+            .modal-header h3 { margin: 0; }
+            .close-btn { background: #e0e0e0; border: none; border-radius: 6px; padding: 8px 12px; cursor: pointer; }
 
         .controls button:hover {
             background: #c82333;
@@ -218,6 +289,11 @@
                 <input type="text" id="participantName" placeholder="Enter your name" required>
             </div>
 
+                <div class="form-group">
+                    <label for="referenceImage">Reference Image (upload)</label>
+                    <input type="file" id="referenceImage" accept="image/*">
+                </div>
+
             <div class="form-group">
                 <label for="token">Access Token</label>
                 <input type="text" id="token" placeholder="Your access token (optional - will be generated if empty)">
@@ -238,6 +314,20 @@
             </div>
         </div>
 
+            <div class="modal" id="matchModal">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h3>Match Detected</h3>
+                        <button class="close-btn" id="closeMatch">Close</button>
+                    </div>
+                    <div id="matchInfo" style="margin-bottom:10px;color:#555"></div>
+                    <div style="position:relative; display:inline-block;">
+                        <video id="remoteFeed" class="local-video" autoplay playsinline style="display:block;"></video>
+                        <canvas id="remoteOverlay" class="local-video" style="position:absolute;left:0;top:0;pointer-events:none;"></canvas>
+                    </div>
+                </div>
+            </div>
+
         <div class="instructions">
             <h3>📋 Instructions</h3>
             <ul>
@@ -248,6 +338,13 @@
                 <li><strong>Step 5:</strong> The Python system will detect and match faces in real-time</li>
                 <li><strong>Note:</strong> Check the Python console for face match notifications</li>
             </ul>
+        </div>
+
+        <div class="results-section">
+            <h3 style="margin-top:30px;color:#333;">🔍 Live Matches</h3>
+            <div id="resultsGrid" class="results-grid">
+                <div id="noMatches" class="no-matches">No matches yet...</div>
+            </div>
         </div>
     </div>
 
@@ -296,10 +393,17 @@
             return true;
         }
 
-        let room = null;
+    let room = null;
         let localVideoTrack = null;
         let localAudioTrack = null;
-        let currentPlayPromise = null;
+        let matchSocket = null;
+        let remoteParticipantId = null;
+    let currentPlayPromise = null;
+    let lastBBox = null; // [top,right,bottom,left] in frame coords
+    let frameSize = null; // [width,height]
+    const matchCards = new Map(); // participant_id -> {el, videoEl, canvasEl, lastUpdate, bbox, frameSize}
+    const CARD_TIMEOUT_MS = 5000;
+    let mySid = null;
 
         const elements = {
             form: document.getElementById('joinForm'),
@@ -404,6 +508,13 @@
 
                 room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
                     console.log('Track subscribed:', track.kind, 'from', participant.identity);
+                    if (track.kind === 'video' && participant.sid === remoteParticipantId) {
+                        const el = track.attach();
+                        const remote = document.getElementById('remoteFeed');
+                        remote.replaceWith(el);
+                        el.id = 'remoteFeed';
+                        el.className = 'local-video';
+                    }
                 });
 
                 if (!token) {
@@ -411,10 +522,14 @@
                 }
 
                 await room.connect(serverUrl, token);
+                mySid = room.localParticipant.sid;
                 await publishLocalTracks();
 
                 elements.videoContainer.style.display = 'block';
                 elements.controls.style.display = 'block';
+
+                // Open match websocket after connection
+                openMatchSocket();
 
             } catch (error) {
                 console.error('Failed to join room:', error);
@@ -422,6 +537,211 @@
                 elements.joinBtn.disabled = false;
             }
         }
+
+        async function uploadReferenceIfAny() {
+                const input = document.getElementById('referenceImage');
+                if (!input.files || !input.files[0]) return;
+                const file = input.files[0];
+                const form = new FormData();
+                form.append('file', file);
+                const res = await fetch('/api/reference', { method: 'POST', body: form });
+                if (!res.ok) throw new Error('Failed to upload reference image');
+                return res.json();
+        }
+
+        function openMatchSocket() {
+            try {
+                const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+                matchSocket = new WebSocket(`${proto}://${location.host}/ws/matches`);
+                matchSocket.onmessage = (ev) => {
+                    try {
+                        const data = JSON.parse(ev.data);
+                        if (data.type === 'match') {
+                            handleMatchEvent(data);
+                        }
+                    } catch (e) { /* ignore parse errors */ }
+                };
+            } catch (e) {
+                console.warn('Match WS unavailable:', e);
+            }
+        }
+
+            function ensureMatchCard(participantId, participantName) {
+                if (matchCards.has(participantId)) return matchCards.get(participantId);
+                const grid = document.getElementById('resultsGrid');
+                const empty = document.getElementById('noMatches');
+                if (empty) empty.remove();
+
+                const card = document.createElement('div');
+                card.className = 'match-card';
+                card.dataset.pid = participantId;
+
+                const title = document.createElement('div');
+                title.style.fontSize = '13px';
+                title.style.fontWeight = '600';
+                title.style.marginBottom = '6px';
+                title.textContent = participantName;
+
+                const wrapper = document.createElement('div');
+                wrapper.style.position = 'relative';
+
+                const video = document.createElement('video');
+                video.autoplay = true;
+                video.playsInline = true;
+                video.muted = true;
+                video.style.display = 'block';
+                video.style.borderRadius = '10px';
+
+                const canvas = document.createElement('canvas');
+                canvas.style.position = 'absolute';
+                canvas.style.left = '0';
+                canvas.style.top = '0';
+                canvas.style.pointerEvents = 'none';
+                canvas.style.borderRadius = '10px';
+
+                wrapper.appendChild(video);
+                wrapper.appendChild(canvas);
+
+                const meta = document.createElement('div');
+                meta.className = 'match-meta';
+                const conf = document.createElement('div');
+                conf.className = 'confidence-pill';
+                const ts = document.createElement('div');
+                ts.className = 'timestamp';
+                meta.appendChild(conf);
+                meta.appendChild(ts);
+
+                card.appendChild(title);
+                card.appendChild(wrapper);
+                card.appendChild(meta);
+                grid.appendChild(card);
+
+                const record = { el: card, videoEl: video, canvasEl: canvas, confEl: conf, tsEl: ts, lastUpdate: Date.now(), bbox: null, frameSize: null };
+                matchCards.set(participantId, record);
+                return record;
+            }
+
+            function attachParticipantVideo(record, participantId) {
+                if (!room) return;
+                // If local participant
+                if (participantId === mySid && localVideoTrack) {
+                    const v = localVideoTrack.attach();
+                    swapVideo(record, v);
+                    return;
+                }
+                // Look up remote
+                const remote = [...room.participants.values()].find(p => p.sid === participantId);
+                if (!remote) return;
+                remote.tracks.forEach(pub => {
+                    if (pub.track && pub.track.kind === 'video') {
+                        const v = pub.track.attach();
+                        swapVideo(record, v);
+                    }
+                });
+            }
+
+            function swapVideo(record, newVideo) {
+                const old = record.videoEl;
+                newVideo.autoplay = true;
+                newVideo.playsInline = true;
+                newVideo.muted = true;
+                newVideo.style.display = 'block';
+                newVideo.style.borderRadius = '10px';
+                old.parentNode.replaceChild(newVideo, old);
+                record.videoEl = newVideo;
+            }
+
+            function handleMatchEvent(data) {
+                const pid = data.participant_id;
+                const name = data.participant_name;
+                const record = ensureMatchCard(pid, name);
+                record.lastUpdate = Date.now();
+                record.bbox = data.bbox || null;
+                record.frameSize = data.frame_size || null;
+                record.confEl.textContent = `Confidence: ${(Number(data.confidence)*100).toFixed(1)}%`;
+                record.tsEl.textContent = new Date(data.timestamp).toLocaleTimeString();
+                attachParticipantVideo(record, pid);
+            }
+
+            function cleanupStaleCards() {
+                const now = Date.now();
+                for (const [pid, rec] of matchCards.entries()) {
+                    if (now - rec.lastUpdate > CARD_TIMEOUT_MS) {
+                        rec.el.remove();
+                        matchCards.delete(pid);
+                    }
+                }
+                if (matchCards.size === 0) {
+                    const grid = document.getElementById('resultsGrid');
+                    if (!document.getElementById('noMatches')) {
+                        const nm = document.createElement('div');
+                        nm.id = 'noMatches';
+                        nm.className = 'no-matches';
+                        nm.textContent = 'No matches yet...';
+                        grid.appendChild(nm);
+                    }
+                }
+            }
+            setInterval(cleanupStaleCards, 1500);
+
+            function drawCardOverlays() {
+                for (const rec of matchCards.values()) {
+                    try {
+                        const video = rec.videoEl;
+                        const canvas = rec.canvasEl;
+                        if (!video.videoWidth) continue;
+                        canvas.width = video.clientWidth;
+                        canvas.height = video.clientHeight;
+                        const ctx = canvas.getContext('2d');
+                        ctx.clearRect(0,0,canvas.width, canvas.height);
+                        if (rec.bbox && rec.frameSize) {
+                            const [top,right,bottom,left] = rec.bbox;
+                            const [fw,fh] = rec.frameSize;
+                            const sx = canvas.width / fw;
+                            const sy = canvas.height / fh;
+                            const x = left * sx;
+                            const y = top * sy;
+                            const w = (right-left) * sx;
+                            const h = (bottom-top) * sy;
+                            ctx.strokeStyle = '#00FF00';
+                            ctx.lineWidth = 3;
+                            ctx.strokeRect(x,y,w,h);
+                        }
+                    } catch {}
+                }
+                requestAnimationFrame(drawCardOverlays);
+            }
+            requestAnimationFrame(drawCardOverlays);
+
+        // Draw overlay bbox on the remote feed
+        function drawOverlay() {
+            try {
+                const video = document.getElementById('remoteFeed');
+                const canvas = document.getElementById('remoteOverlay');
+                if (!video || !canvas) return;
+                const vw = video.videoWidth || video.clientWidth;
+                const vh = video.videoHeight || video.clientHeight;
+                canvas.width = video.clientWidth;
+                canvas.height = video.clientHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                if (lastBBox && frameSize && vw && vh) {
+                    const [top, right, bottom, left] = lastBBox; // in frame coords
+                    const [fw, fh] = frameSize; // width, height
+                    const sx = canvas.width / fw;
+                    const sy = canvas.height / fh;
+                    const x = left * sx;
+                    const y = top * sy;
+                    const w = (right - left) * sx;
+                    const h = (bottom - top) * sy;
+                    ctx.strokeStyle = '#00FF00';
+                    ctx.lineWidth = 3;
+                    ctx.strokeRect(x, y, w, h);
+                }
+            } catch {}
+            requestAnimationFrame(drawOverlay);
+        }
+        requestAnimationFrame(drawOverlay);
 
         async function publishLocalTracks() {
             try {
@@ -511,6 +831,7 @@
             }
 
             hideStatus();
+            try { await uploadReferenceIfAny(); } catch (err) { console.warn(err); }
             await joinRoom(serverUrl, roomName, participantName, token || null);
         });
 
@@ -555,6 +876,14 @@
             resetUI();
             hideStatus();
         });
+
+        const closeBtn = document.getElementById('closeMatch');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => {
+                const modal = document.getElementById('matchModal');
+                if (modal) modal.style.display = 'none';
+            });
+        }
 
         // 🔹 Add click handler for manual video start (fallback for autoplay issues)
         document.addEventListener('click', async (e) => {

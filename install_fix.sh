@@ -49,6 +49,8 @@ pip install livekit.api
 # Install LiveKit
 pip install livekit
 
+pip install python-multipart
+
 # Install other dependencies
 pip install Pillow
 
