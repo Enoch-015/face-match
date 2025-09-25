@@ -29,12 +29,19 @@ import face_recognition
 import numpy as np
 from typing import Dict, List, Optional
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import aiohttp
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from livekit import rtc
 from livekit.api.access_token import AccessToken, VideoGrants
+import signal
+import traceback
+import os as _os
+try:  # optional dependency
+    import psutil  # type: ignore
+except ImportError:  # pragma: no cover
+    psutil = None  # fallback
 
 try:
     from livekit.rtc import VideoBufferType
@@ -55,7 +62,10 @@ class LiveKitFaceRecognizer:
         self.reference_encodings: Dict[str, np.ndarray] = {}
         self.participants: Dict[str, rtc.RemoteParticipant] = {}
         self.tolerance = tolerance
-        self.frame_executor = ThreadPoolExecutor(max_workers=2)
+        max_workers = self._parse_int_env("FRAME_EXECUTOR_WORKERS", 2)
+        if max_workers < 1:
+            max_workers = 1
+        self.frame_executor = ThreadPoolExecutor(max_workers=max_workers)
         self.match_history: Dict[str, List] = {}
         self.last_match_time: Dict[str, datetime] = {}
         self.ref_lock = threading.Lock()
@@ -282,7 +292,7 @@ class LiveKitFaceRecognizer:
                     'confidence': 1 - dist,
                     'participant_id': participant.sid,
                     'participant_name': participant.identity,
-                    'timestamp': datetime.utcnow(),
+                    'timestamp': datetime.now(timezone.utc),
                 })
             return out or None
         except Exception:
@@ -338,7 +348,7 @@ class LiveKitFaceRecognizer:
                     'participant_id': participant.sid,
                     'participant_name': participant.identity,
                     'match_found': match_found,
-                    'timestamp': datetime.utcnow().isoformat()
+                    'timestamp': datetime.now(timezone.utc).isoformat()
                 }
                 await session.post(f"{api_url}/api/check", json=payload, timeout=3)
         except Exception:
@@ -348,19 +358,13 @@ class LiveKitFaceRecognizer:
     async def track_cycle(self, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
         sid = publication.sid
         try:
+            # Revised simpler logic: each loop performs one batch. If a match is found,
+            # hold before running the next batch. If no match, unsubscribe and wait.
             while True:
-                found = await self.run_batch(publication, participant)
-                if found:
+                match_found = await self.run_batch(publication, participant)
+                if match_found:
                     logger.info(f"[Cycle] Hold {self.hold_seconds}s sid={sid}")
                     await asyncio.sleep(self.hold_seconds)
-                    re_found = await self.run_batch(publication, participant)
-                    if not re_found:
-                        try:
-                            publication.set_subscribed(False)
-                        except Exception:
-                            pass
-                        logger.info(f"[Cycle] Recheck miss -> unsub sid={sid}; wait {self.wait_seconds}s")
-                        await asyncio.sleep(self.wait_seconds)
                 else:
                     try:
                         publication.set_subscribed(False)
@@ -429,6 +433,41 @@ class LiveKitFaceRecognizer:
         except ValueError:
             return default
 
+
+# ---------------------- Diagnostics / Signal Handling ----------------------
+def _dump_all_thread_stacks():
+    try:
+        import threading as _th
+        frames = sys._current_frames()
+        for thread in _th.enumerate():
+            frame = frames.get(thread.ident)
+            if not frame:
+                continue
+            stack = ''.join(traceback.format_stack(frame))
+            logger.warning(f"\n--- Stack dump for thread {thread.name} (id={thread.ident}) ---\n{stack}")
+    except Exception:  # pragma: no cover
+        logger.exception("Failed dumping thread stacks")
+
+
+def _signal_handler(signum, frame):  # pragma: no cover
+    signame = {signal.SIGINT: 'SIGINT', signal.SIGTERM: 'SIGTERM'}.get(signum, str(signum))
+    logger.warning(f"Received {signame}; initiating graceful shutdown and dumping stacks...")
+    _dump_all_thread_stacks()
+    # Mark global flag; main loop checks this to exit cleanly.
+    global LiveKitFaceRecognizer_shutdown_flag
+    LiveKitFaceRecognizer_shutdown_flag = True
+
+# module-level flag inspected by main()
+LiveKitFaceRecognizer_shutdown_flag = False
+
+
+def install_signal_handlers():  # pragma: no cover
+    try:
+        signal.signal(signal.SIGINT, _signal_handler)
+        signal.signal(signal.SIGTERM, _signal_handler)
+    except Exception:
+        logger.debug("Signal handlers not installed (platform limitation)")
+
 async def generate_access_token(api_key: str, api_secret: str, room_name: str, participant_identity: str) -> str:
     return (
         AccessToken(api_key, api_secret)
@@ -458,7 +497,13 @@ async def main():
         logger.error(f"Reference image not found: {ref_path}")
         return
     recognizer = LiveKitFaceRecognizer(ref_path, tolerance=0.5)
+    install_signal_handlers()
     token = await generate_access_token(API_KEY, API_SECRET, ROOM_NAME, "face-recognition-client")
+    # Memory watchdog thresholds
+    mem_warn_ratio = float(_os.getenv("MEMORY_WARN_RATIO", "0.80"))  # warn at 80% by default
+    mem_exit_ratio = float(_os.getenv("MEMORY_EXIT_RATIO", "0.92"))  # attempt graceful exit at 92%
+    last_mem_log = 0.0
+    loop = asyncio.get_event_loop()
     try:
         if not await recognizer.connect_to_room(LIVEKIT_URL, token):
             return
@@ -466,13 +511,37 @@ async def main():
         logger.info(f"Room: {ROOM_NAME}  URL: {LIVEKIT_URL}")
         while True:
             await asyncio.sleep(10)
+            # Check for shutdown flag from signal handler
+            global LiveKitFaceRecognizer_shutdown_flag
+            if LiveKitFaceRecognizer_shutdown_flag:
+                logger.warning("Graceful shutdown flag detected; breaking main loop")
+                break
+            # Periodic memory check
+            now_m = loop.time()
+            if psutil and now_m - last_mem_log >= 10:
+                try:
+                    vmem = psutil.virtual_memory()
+                    ratio = vmem.percent / 100.0
+                    if ratio >= mem_exit_ratio:
+                        logger.error(f"Memory usage {vmem.percent:.1f}% >= exit ratio {mem_exit_ratio*100:.0f}%; initiating graceful shutdown")
+                        break
+                    elif ratio >= mem_warn_ratio:
+                        logger.warning(f"High memory usage {vmem.percent:.1f}% (warn threshold {mem_warn_ratio*100:.0f}%)")
+                    last_mem_log = now_m
+                except Exception:
+                    pass
             summary = recognizer.get_match_summary()
             if summary['total_matches'] > 0:
                 logger.info(f"📊 Matches={summary['total_matches']} participants={summary['total_participants_matched']}")
     except KeyboardInterrupt:
-        logger.info("Stopping...")
+        logger.info("Stopping (KeyboardInterrupt)...")
     finally:
         await recognizer.disconnect()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception:  # pragma: no cover
+        logger.exception("Fatal unhandled exception in main entrypoint")
+        # Re-raise so that non-zero exit code surfaces to caller.
+        raise
