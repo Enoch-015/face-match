@@ -74,6 +74,19 @@ async def post_match(event: dict):
         match_ws_connections.discard(ws)
     return {"ok": True, "delivered": len(match_ws_connections) - len(stale)}
 
+@app.post("/api/check")
+async def post_check(event: dict):
+    # Broadcast a batch check completion (match_found true/false)
+    stale: list[WebSocket] = []
+    for ws in list(match_ws_connections):
+        try:
+            await ws.send_json({"type": "check", **event})
+        except Exception:
+            stale.append(ws)
+    for ws in stale:
+        match_ws_connections.discard(ws)
+    return {"ok": True, "delivered": len(match_ws_connections) - len(stale)}
+
 @app.websocket("/ws/matches")
 async def ws_matches(ws: WebSocket):
     await ws.accept()

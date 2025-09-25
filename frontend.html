@@ -254,6 +254,9 @@
             background: #c82333;
         }
 
+    .check-pill { background: rgba(0,123,255,0.18); color:#2d7ef7; padding:4px 8px; border-radius:12px; font-weight:600; font-size:11px; }
+    .no-match { background: rgba(220,53,69,0.18); color:#dc3545; }
+
         @media (max-width: 768px) {
             .container {
                 padding: 20px;
@@ -558,6 +561,8 @@
                         const data = JSON.parse(ev.data);
                         if (data.type === 'match') {
                             handleMatchEvent(data);
+                        } else if (data.type === 'check') {
+                            handleCheckEvent(data);
                         }
                     } catch (e) { /* ignore parse errors */ }
                 };
@@ -608,15 +613,19 @@
                 conf.className = 'confidence-pill';
                 const ts = document.createElement('div');
                 ts.className = 'timestamp';
+                const presence = document.createElement('div');
+                presence.className = 'check-pill';
+                presence.textContent = 'Checking...';
                 meta.appendChild(conf);
                 meta.appendChild(ts);
+                meta.appendChild(presence);
 
                 card.appendChild(title);
                 card.appendChild(wrapper);
                 card.appendChild(meta);
                 grid.appendChild(card);
 
-                const record = { el: card, videoEl: video, canvasEl: canvas, confEl: conf, tsEl: ts, lastUpdate: Date.now(), bbox: null, frameSize: null };
+                const record = { el: card, videoEl: video, canvasEl: canvas, confEl: conf, tsEl: ts, presenceEl: presence, lastUpdate: Date.now(), bbox: null, frameSize: null, lastCheck: null, lastCheckMatch: null };
                 matchCards.set(participantId, record);
                 return record;
             }
@@ -660,13 +669,36 @@
                 record.frameSize = data.frame_size || null;
                 record.confEl.textContent = `Confidence: ${(Number(data.confidence)*100).toFixed(1)}%`;
                 record.tsEl.textContent = new Date(data.timestamp).toLocaleTimeString();
+                if (record.presenceEl) {
+                    record.presenceEl.textContent = 'Match in batch';
+                    record.presenceEl.classList.remove('no-match');
+                }
                 attachParticipantVideo(record, pid);
+            }
+
+            function handleCheckEvent(data) {
+                const pid = data.participant_id;
+                const name = data.participant_name || pid;
+                const record = ensureMatchCard(pid, name);
+                record.lastUpdate = Date.now();
+                record.lastCheck = Date.now();
+                record.lastCheckMatch = !!data.match_found;
+                record.tsEl.textContent = new Date(data.timestamp).toLocaleTimeString();
+                if (record.presenceEl) {
+                    if (data.match_found) {
+                        record.presenceEl.textContent = 'Match in batch';
+                        record.presenceEl.classList.remove('no-match');
+                    } else {
+                        record.presenceEl.textContent = 'No match';
+                        record.presenceEl.classList.add('no-match');
+                    }
+                }
             }
 
             function cleanupStaleCards() {
                 const now = Date.now();
                 for (const [pid, rec] of matchCards.entries()) {
-                    if (now - rec.lastUpdate > CARD_TIMEOUT_MS) {
+                    if (now - rec.lastUpdate > 60000) { // 60s
                         rec.el.remove();
                         matchCards.delete(pid);
                     }
@@ -682,7 +714,9 @@
                     }
                 }
             }
-            setInterval(cleanupStaleCards, 1500);
+            // overwrite interval setup (was earlier) - ensure only one setInterval defined after modifications
+            try { clearInterval(window.__matchCleanupInterval); } catch {}
+            window.__matchCleanupInterval = setInterval(cleanupStaleCards, 5000);
 
             function drawCardOverlays() {
                 for (const rec of matchCards.values()) {
