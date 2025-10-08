@@ -12,12 +12,7 @@ fi
 source venv/bin/activate
 
 # Check if reference image exists (using your actual filename)
-REFERENCE_IMAGE="/workspaces/face-match/reference/WhatsApp Image 2025-08-12 at 07.38.40_dec32353.jpg"
-if [ ! -f "$REFERENCE_IMAGE" ]; then
-    echo "❌ Reference image not found at: $REFERENCE_IMAGE"
-    echo "Please check the file path and ensure the image exists"
-    exit 1
-fi
+
 
 echo "✅ Found reference image: $REFERENCE_IMAGE"
 
