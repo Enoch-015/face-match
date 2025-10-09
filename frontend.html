@@ -133,6 +133,20 @@
             display: none;
         }
 
+        .video-wrapper {
+            position: relative;
+            display: inline-block;
+        }
+
+        .video-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
         .local-video {
             width: 100%;
             max-width: 400px;
@@ -257,6 +271,97 @@
     .check-pill { background: rgba(0,123,255,0.18); color:#2d7ef7; padding:4px 8px; border-radius:12px; font-weight:600; font-size:11px; }
     .no-match { background: rgba(220,53,69,0.18); color:#dc3545; }
 
+        .card-status {
+            margin-top: 30px;
+            background: #f3f4ff;
+            border-radius: 15px;
+            padding: 20px;
+            text-align: left;
+            box-shadow: 0 10px 25px rgba(118, 75, 162, 0.15);
+        }
+
+        .card-status h3 {
+            margin-bottom: 12px;
+            color: #333;
+        }
+
+        .card-actions {
+            margin-top: 16px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .card-actions button {
+            background: linear-gradient(135deg, #4f46e5 0%, #3b82f6 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            padding: 10px 18px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .card-actions button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 18px rgba(79, 70, 229, 0.25);
+        }
+
+        .card-actions button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .card-status-message {
+            font-size: 1rem;
+            color: #4f46e5;
+            font-weight: 600;
+        }
+
+        .card-status-message.error {
+            color: #dc3545;
+        }
+
+        .card-status-message.success {
+            color: #0f9d58;
+        }
+
+        .ocr-preview {
+            margin-top: 14px;
+            padding: 16px;
+            background: rgba(255,255,255,0.8);
+            border-radius: 12px;
+            border: 1px solid #e0e7ff;
+            white-space: pre-wrap;
+            font-family: "Source Code Pro", monospace;
+            font-size: 0.9rem;
+            color: #333;
+        }
+
+        .card-status-details a {
+            display: inline-block;
+            margin-top: 10px;
+            color: #4f46e5;
+            font-weight: 600;
+            text-decoration: none;
+        }
+
+        .card-snapshot {
+            margin-top: 16px;
+            max-width: 280px;
+            border-radius: 12px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.15);
+            display: block;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
         @media (max-width: 768px) {
             .container {
                 padding: 20px;
@@ -291,12 +396,6 @@
                 <label for="participantName">Your Name</label>
                 <input type="text" id="participantName" placeholder="Enter your name" required>
             </div>
-
-                <div class="form-group">
-                    <label for="referenceImage">Reference Image (upload)</label>
-                    <input type="file" id="referenceImage" accept="image/*">
-                </div>
-
             <div class="form-group">
                 <label for="token">Access Token</label>
                 <input type="text" id="token" placeholder="Your access token (optional - will be generated if empty)">
@@ -309,8 +408,12 @@
 
         <div class="video-container" id="videoContainer">
             <h3>Your Video Feed</h3>
-            <video id="localVideo" class="local-video" autoplay muted playsinline></video>
+            <div class="video-wrapper">
+                <video id="localVideo" class="local-video" autoplay muted playsinline></video>
+                <canvas id="cardOverlay" class="video-overlay"></canvas>
+            </div>
             <div class="controls" id="controls">
+                <button id="switchCamera" class="hidden">Use Rear Camera</button>
                 <button id="toggleVideo">Turn Off Video</button>
                 <button id="toggleAudio">Turn Off Audio</button>
                 <button id="leaveRoom">Leave Room</button>
@@ -331,15 +434,30 @@
                 </div>
             </div>
 
+            <div class="card-status" id="cardStatus">
+                <h3>🪪 ID Card Capture</h3>
+                <div id="cardStatusMessage" class="card-status-message">Waiting for ID card...</div>
+                <div class="card-status-details">
+                    <pre id="ocrPreview" class="ocr-preview hidden"></pre>
+                    <a id="ocrDownloadLink" href="#" target="_blank" rel="noopener" class="hidden">Download OCR text</a>
+                    <img id="cardSnapshot" class="card-snapshot hidden" alt="Card snapshot preview" />
+                    <div class="card-actions">
+                        <button id="retryCardCapture" class="hidden">Retry Card Capture</button>
+                    </div>
+                </div>
+            </div>
+
         <div class="instructions">
             <h3>📋 Instructions</h3>
             <ul>
                 <li><strong>Step 1:</strong> Make sure your Python face recognition system is running</li>
                 <li><strong>Step 2:</strong> Enter your name and click "Join Room"</li>
                 <li><strong>Step 3:</strong> Allow camera access when prompted</li>
-                <li><strong>Step 4:</strong> Position your face in view of the camera</li>
-                <li><strong>Step 5:</strong> The Python system will detect and match faces in real-time</li>
-                <li><strong>Note:</strong> Check the Python console for face match notifications</li>
+                <li><strong>Step 4:</strong> Hold your ID card steady so the system can detect and scan it</li>
+                <li><strong>Step 5:</strong> Wait for the OCR status to show that the card text and face have been captured</li>
+                <li><strong>Step 6:</strong> Once the reference is ready, position your face for live matching</li>
+                <li><strong>Tip:</strong> On mobile we’ll automatically switch to the rear camera for clearer card capture. Use the Switch Camera button if you need to change lenses.</li>
+                <li><strong>Note:</strong> Check the dashboard below for status updates and face match notifications</li>
             </ul>
         </div>
 
@@ -402,6 +520,120 @@
         let matchSocket = null;
         let remoteParticipantId = null;
     let currentPlayPromise = null;
+    const isMobileDevice = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    let preferredFacingMode = isMobileDevice ? 'environment' : 'user';
+    let currentFacingMode = preferredFacingMode;
+    let availableCameras = [];
+
+    function updateSwitchCameraLabel() {
+        if (!elements?.switchCamera) return;
+        const label = currentFacingMode === 'environment' ? 'Use Front Camera' : 'Use Rear Camera';
+        elements.switchCamera.textContent = label;
+    }
+
+    async function updateCameraAvailability() {
+        if (!navigator.mediaDevices?.enumerateDevices) {
+            if (isMobileDevice && elements?.switchCamera) {
+                elements.switchCamera.classList.remove('hidden');
+                updateSwitchCameraLabel();
+            }
+            return;
+        }
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            availableCameras = devices.filter((d) => d.kind === 'videoinput');
+            if (elements?.switchCamera) {
+                if (isMobileDevice || availableCameras.length > 1) {
+                    elements.switchCamera.classList.remove('hidden');
+                } else {
+                    elements.switchCamera.classList.add('hidden');
+                }
+                updateSwitchCameraLabel();
+            }
+        } catch (error) {
+            console.warn('Unable to enumerate camera devices', error);
+            if (isMobileDevice && elements?.switchCamera) {
+                elements.switchCamera.classList.remove('hidden');
+                updateSwitchCameraLabel();
+            }
+        }
+    }
+
+    async function createVideoTrackWithFallback(targetFacingMode) {
+        const attempts = targetFacingMode === 'environment' ? ['environment', 'user'] : [targetFacingMode];
+        let lastError = null;
+        for (const mode of attempts) {
+            try {
+                const track = await createLocalVideoTrack({
+                    resolution: VideoPresets.h720.resolution,
+                    facingMode: mode,
+                });
+                return { track, facingMode: mode };
+            } catch (error) {
+                lastError = error;
+                if (mode === 'user' || targetFacingMode === 'user') {
+                    throw error;
+                }
+                console.warn('Rear camera unavailable, falling back to front camera', error);
+            }
+        }
+        throw lastError ?? new Error('Unable to acquire camera');
+    }
+
+    async function setLocalVideoTrack(track, facingMode) {
+        if (!room) {
+            throw new Error('Room not connected');
+        }
+        const wasMuted = localVideoTrack ? localVideoTrack.isMuted : false;
+        if (localVideoTrack) {
+            try {
+                await room.localParticipant.unpublishTrack(localVideoTrack);
+            } catch (error) {
+                console.warn('Failed to unpublish previous video track', error);
+            }
+            try {
+                localVideoTrack.detach().forEach((el) => el.remove());
+            } catch (error) {
+                console.warn('Failed to detach previous video elements', error);
+            }
+            try {
+                localVideoTrack.stop();
+            } catch (error) {
+                console.warn('Failed to stop previous video track', error);
+            }
+        }
+        localVideoTrack = track;
+        currentFacingMode = facingMode;
+        preferredFacingMode = facingMode;
+        const newVideoEl = localVideoTrack.attach();
+        newVideoEl.id = 'localVideo';
+        newVideoEl.className = 'local-video';
+        newVideoEl.muted = true;
+        newVideoEl.autoplay = true;
+        newVideoEl.playsInline = true;
+
+        const oldVideo = elements?.localVideo;
+        if (oldVideo && oldVideo.parentNode) {
+            oldVideo.parentNode.replaceChild(newVideoEl, oldVideo);
+        }
+        if (elements) {
+            elements.localVideo = newVideoEl;
+        }
+
+        await room.localParticipant.publishTrack(localVideoTrack);
+        if (wasMuted) {
+            try {
+                await localVideoTrack.mute();
+            } catch (error) {
+                console.warn('Failed to reapply mute state to video track', error);
+            }
+        }
+
+        setTimeout(async () => {
+            await safeVideoPlay(newVideoEl);
+        }, 100);
+        updateSwitchCameraLabel();
+    }
     let lastBBox = null; // [top,right,bottom,left] in frame coords
     let frameSize = null; // [width,height]
     const matchCards = new Map(); // participant_id -> {el, videoEl, canvasEl, lastUpdate, bbox, frameSize}
@@ -415,10 +647,32 @@
             localVideo: document.getElementById('localVideo'),
             controls: document.getElementById('controls'),
             joinBtn: document.getElementById('joinBtn'),
+            switchCamera: document.getElementById('switchCamera'),
             toggleVideo: document.getElementById('toggleVideo'),
             toggleAudio: document.getElementById('toggleAudio'),
-            leaveRoom: document.getElementById('leaveRoom')
+            leaveRoom: document.getElementById('leaveRoom'),
+            retryCardCapture: document.getElementById('retryCardCapture'),
         };
+        if (elements.switchCamera) {
+            if (isMobileDevice) {
+                elements.switchCamera.classList.remove('hidden');
+            }
+            updateSwitchCameraLabel();
+        }
+        if (elements.retryCardCapture) {
+            elements.retryCardCapture.dataset.defaultLabel = elements.retryCardCapture.textContent || 'Retry Card Capture';
+        }
+
+        const cardUI = {
+            message: document.getElementById('cardStatusMessage'),
+            preview: document.getElementById('ocrPreview'),
+            link: document.getElementById('ocrDownloadLink'),
+            snapshot: document.getElementById('cardSnapshot'),
+            overlay: document.getElementById('cardOverlay'),
+        };
+
+        let cardBBox = null;
+        let cardFrameSize = null;
 
         // 🔹 Fixed video play function with proper error handling
         async function safeVideoPlay(videoElement) {
@@ -541,17 +795,6 @@
             }
         }
 
-        async function uploadReferenceIfAny() {
-                const input = document.getElementById('referenceImage');
-                if (!input.files || !input.files[0]) return;
-                const file = input.files[0];
-                const form = new FormData();
-                form.append('file', file);
-                const res = await fetch('/api/reference', { method: 'POST', body: form });
-                if (!res.ok) throw new Error('Failed to upload reference image');
-                return res.json();
-        }
-
         function openMatchSocket() {
             try {
                 const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -563,6 +806,8 @@
                             handleMatchEvent(data);
                         } else if (data.type === 'check') {
                             handleCheckEvent(data);
+                        } else if (data.type === 'card_status') {
+                            handleCardStatus(data);
                         }
                     } catch (e) { /* ignore parse errors */ }
                 };
@@ -747,6 +992,72 @@
             }
             requestAnimationFrame(drawCardOverlays);
 
+            function handleCardStatus(data) {
+                if (!data) return;
+                if (data.message) {
+                    cardUI.message.textContent = data.message;
+                    cardUI.message.classList.remove('error', 'success');
+                    if (data.status === 'error') {
+                        cardUI.message.classList.add('error');
+                    } else if (data.reference_ready) {
+                        cardUI.message.classList.add('success');
+                    }
+                }
+
+                if (data.text_preview) {
+                    cardUI.preview.textContent = data.text_preview;
+                    cardUI.preview.classList.remove('hidden');
+                } else {
+                    cardUI.preview.textContent = '';
+                    cardUI.preview.classList.add('hidden');
+                }
+
+                if (data.text_url) {
+                    cardUI.link.href = data.text_url;
+                    cardUI.link.classList.remove('hidden');
+                } else {
+                    cardUI.link.classList.add('hidden');
+                }
+
+                if (data.card_snapshot_url) {
+                    cardUI.snapshot.src = `${data.card_snapshot_url}?t=${Date.now()}`;
+                    cardUI.snapshot.classList.remove('hidden');
+                } else {
+                    cardUI.snapshot.classList.add('hidden');
+                }
+
+                if (elements.retryCardCapture) {
+                    const defaultLabel = elements.retryCardCapture.dataset.defaultLabel || 'Retry Card Capture';
+                    const visibleStates = ['ocr_retry', 'card_retry', 'error', 'completed', 'manual_reset'];
+                    if (visibleStates.includes(data.status)) {
+                        elements.retryCardCapture.classList.remove('hidden');
+                        if (data.status === 'manual_reset') {
+                            elements.retryCardCapture.disabled = true;
+                            elements.retryCardCapture.textContent = 'Retry Requested…';
+                        } else {
+                            elements.retryCardCapture.disabled = false;
+                            elements.retryCardCapture.textContent = defaultLabel;
+                        }
+                    } else {
+                        elements.retryCardCapture.classList.add('hidden');
+                        elements.retryCardCapture.disabled = false;
+                        elements.retryCardCapture.textContent = defaultLabel;
+                    }
+                }
+
+                if (Array.isArray(data.card_bbox) && Array.isArray(data.frame_size)) {
+                    cardBBox = data.card_bbox;
+                    cardFrameSize = data.frame_size;
+                } else {
+                    cardBBox = null;
+                    cardFrameSize = null;
+                }
+
+                if (data.status === 'error' && data.error) {
+                    console.warn('Card processing error:', data.error);
+                }
+            }
+
         // Draw overlay bbox on the remote feed
         function drawOverlay() {
             try {
@@ -777,38 +1088,55 @@
         }
         requestAnimationFrame(drawOverlay);
 
+        function drawLocalCardOverlay() {
+            try {
+                const canvas = cardUI.overlay;
+                const video = elements.localVideo;
+                if (!canvas || !video) {
+                    requestAnimationFrame(drawLocalCardOverlay);
+                    return;
+                }
+
+                const rect = video.getBoundingClientRect();
+                canvas.width = rect.width;
+                canvas.height = rect.height;
+                const ctx = canvas.getContext('2d');
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                if (cardBBox && cardFrameSize && cardFrameSize[0] && cardFrameSize[1]) {
+                    const [top, right, bottom, left] = cardBBox;
+                    const [fw, fh] = cardFrameSize;
+                    const sx = canvas.width / fw;
+                    const sy = canvas.height / fh;
+                    const x = left * sx;
+                    const y = top * sy;
+                    const w = (right - left) * sx;
+                    const h = (bottom - top) * sy;
+                    ctx.strokeStyle = '#ff9800';
+                    ctx.lineWidth = 3;
+                    ctx.strokeRect(x, y, w, h);
+                    ctx.fillStyle = 'rgba(255, 152, 0, 0.18)';
+                    ctx.fillRect(x, y, w, h);
+                }
+            } catch (e) {
+                // Ignore drawing errors
+            }
+            requestAnimationFrame(drawLocalCardOverlay);
+        }
+        requestAnimationFrame(drawLocalCardOverlay);
+
         async function publishLocalTracks() {
             try {
-                localVideoTrack = await createLocalVideoTrack({
-                    resolution: VideoPresets.h720.resolution,
-                    facingMode: 'user'
-                });
-                localAudioTrack = await createLocalAudioTrack();
+                const { track, facingMode } = await createVideoTrackWithFallback(preferredFacingMode);
+                await setLocalVideoTrack(track, facingMode);
 
-                // 🔹 Fixed video element replacement with proper error handling
-                const videoElement = localVideoTrack.attach();
-                
-                // Ensure proper video element setup
-                videoElement.id = 'localVideo';
-                videoElement.className = 'local-video';
-                videoElement.muted = true;
-                videoElement.autoplay = true;
-                videoElement.playsInline = true;
-                
-                // Replace the existing video element
-                const oldVideo = elements.localVideo;
-                oldVideo.parentNode.replaceChild(videoElement, oldVideo);
-                elements.localVideo = videoElement;
+                if (!localAudioTrack) {
+                    localAudioTrack = await createLocalAudioTrack();
+                    await room.localParticipant.publishTrack(localAudioTrack);
+                }
 
-                // Wait a moment before attempting to play
-                setTimeout(async () => {
-                    await safeVideoPlay(videoElement);
-                }, 100);
-
-                await room.localParticipant.publishTrack(localVideoTrack);
-                await room.localParticipant.publishTrack(localAudioTrack);
-
-                console.log('Local tracks published successfully');
+                await updateCameraAvailability();
+                console.log(`Local tracks published successfully (camera: ${facingMode})`);
             } catch (error) {
                 console.error('Failed to publish local tracks:', error);
                 showStatus(`Failed to access camera/microphone: ${error.message}`, 'error');
@@ -834,12 +1162,55 @@
             }
 
             if (localVideoTrack) {
+                try {
+                    localVideoTrack.detach().forEach((el) => el.remove());
+                } catch {}
                 localVideoTrack.stop();
                 localVideoTrack = null;
             }
             if (localAudioTrack) {
                 localAudioTrack.stop();
                 localAudioTrack = null;
+            }
+            preferredFacingMode = isMobileDevice ? 'environment' : 'user';
+            currentFacingMode = preferredFacingMode;
+            availableCameras = [];
+            if (elements.switchCamera) {
+                elements.switchCamera.disabled = false;
+                if (isMobileDevice || availableCameras.length > 1) {
+                    elements.switchCamera.classList.remove('hidden');
+                } else {
+                    elements.switchCamera.classList.add('hidden');
+                }
+                updateSwitchCameraLabel();
+            }
+
+            cardBBox = null;
+            cardFrameSize = null;
+            if (cardUI.overlay) {
+                const ctx = cardUI.overlay.getContext('2d');
+                ctx && ctx.clearRect(0, 0, cardUI.overlay.width, cardUI.overlay.height);
+            }
+            if (cardUI.message) {
+                cardUI.message.textContent = 'Waiting for ID card...';
+                cardUI.message.classList.remove('error', 'success');
+            }
+            if (cardUI.preview) {
+                cardUI.preview.textContent = '';
+                cardUI.preview.classList.add('hidden');
+            }
+            if (cardUI.link) {
+                cardUI.link.classList.add('hidden');
+            }
+            if (cardUI.snapshot) {
+                cardUI.snapshot.classList.add('hidden');
+            }
+            if (elements.retryCardCapture) {
+                elements.retryCardCapture.classList.add('hidden');
+                elements.retryCardCapture.disabled = false;
+                if (elements.retryCardCapture.dataset.defaultLabel) {
+                    elements.retryCardCapture.textContent = elements.retryCardCapture.dataset.defaultLabel;
+                }
             }
 
             room = null;
@@ -865,7 +1236,6 @@
             }
 
             hideStatus();
-            try { await uploadReferenceIfAny(); } catch (err) { console.warn(err); }
             await joinRoom(serverUrl, roomName, participantName, token || null);
         });
 
@@ -901,6 +1271,29 @@
             }
         });
 
+        if (elements.switchCamera) {
+            elements.switchCamera.addEventListener('click', async () => {
+                if (!room) return;
+                const requestedMode = currentFacingMode === 'environment' ? 'user' : 'environment';
+                preferredFacingMode = requestedMode;
+                elements.switchCamera.disabled = true;
+                try {
+                    const { track, facingMode } = await createVideoTrackWithFallback(requestedMode);
+                    await setLocalVideoTrack(track, facingMode);
+                    await updateCameraAvailability();
+                    if (facingMode !== requestedMode) {
+                        showStatus('Rear camera not available. Using front camera instead.', 'error');
+                    }
+                } catch (error) {
+                    console.error('Failed to switch camera:', error);
+                    showStatus(`Unable to switch camera: ${error.message}`, 'error');
+                } finally {
+                    elements.switchCamera.disabled = false;
+                    updateSwitchCameraLabel();
+                }
+            });
+        }
+
         elements.leaveRoom.addEventListener('click', async () => {
             try {
                 if (room) await room.disconnect();
@@ -910,6 +1303,35 @@
             resetUI();
             hideStatus();
         });
+
+        if (elements.retryCardCapture) {
+            elements.retryCardCapture.addEventListener('click', async () => {
+                const button = elements.retryCardCapture;
+                const defaultLabel = button.dataset.defaultLabel || 'Retry Card Capture';
+                button.disabled = true;
+                button.textContent = 'Requesting…';
+                try {
+                    const response = await fetch('/api/card-reset', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({})
+                    });
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    if (cardUI.message) {
+                        cardUI.message.textContent = 'Retry requested. Please show the ID card again.';
+                        cardUI.message.classList.remove('error', 'success');
+                    }
+                    button.textContent = 'Retry Requested…';
+                } catch (error) {
+                    console.error('Failed to request card reset:', error);
+                    showStatus(`Failed to request card retry: ${error.message}`, 'error');
+                    button.disabled = false;
+                    button.textContent = defaultLabel;
+                }
+            });
+        }
 
         const closeBtn = document.getElementById('closeMatch');
         if (closeBtn) {

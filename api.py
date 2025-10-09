@@ -1,11 +1,15 @@
+import asyncio
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
+
 from fastapi import FastAPI, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from livekit.api.access_token import AccessToken, VideoGrants
-from pathlib import Path
-import os
-import asyncio
 
 API_KEY = os.getenv("LIVEKIT_API_KEY")
 API_SECRET = os.getenv("LIVEKIT_API_SECRET")
@@ -27,6 +31,7 @@ REFERENCE_DIR.mkdir(exist_ok=True)
 REFERENCE_IMAGE_PATH = REFERENCE_DIR / "current.jpg"
 CAPTURED_DIR = Path(__file__).resolve().parent / "captured_faces"
 CAPTURED_DIR.mkdir(exist_ok=True)
+RESET_SIGNAL_PATH = REFERENCE_DIR / "card_reset.json"
 
 # Store active WebSocket connections for match events
 match_ws_connections: set[WebSocket] = set()
@@ -81,6 +86,39 @@ async def post_check(event: dict):
     for ws in list(match_ws_connections):
         try:
             await ws.send_json({"type": "check", **event})
+        except Exception:
+            stale.append(ws)
+    for ws in stale:
+        match_ws_connections.discard(ws)
+    return {"ok": True, "delivered": len(match_ws_connections) - len(stale)}
+
+
+@app.post("/api/card-reset")
+async def post_card_reset(payload: dict | None = None):
+    body = payload or {}
+    token = body.get("token") or uuid4().hex
+    record = {
+        "token": token,
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "reason": body.get("reason") or "manual_reset",
+        "status": body.get("status") or "manual_reset",
+        "message": body.get("message") or "Manual retry requested. Show the ID card again.",
+        "metadata": body.get("metadata") or {},
+        "clear_reference": bool(body.get("clear_reference", True)),
+    }
+    try:
+        RESET_SIGNAL_PATH.write_text(json.dumps(record), encoding="utf-8")
+    except Exception as exc:  # pragma: no cover - filesystem errors surfaced via API
+        raise HTTPException(status_code=500, detail=f"Failed to record reset signal: {exc}") from exc
+    return {"ok": True, "token": token}
+
+
+@app.post("/api/card-status")
+async def post_card_status(event: dict):
+    stale: list[WebSocket] = []
+    for ws in list(match_ws_connections):
+        try:
+            await ws.send_json({"type": "card_status", **event})
         except Exception:
             stale.append(ws)
     for ws in stale:

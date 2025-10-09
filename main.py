@@ -1,10 +1,12 @@
 # main.py - LiveKit Face Recognition System with Liveness Detection
 import asyncio
+import json
 import cv2
 import face_recognition
 import numpy as np
 import sys
 from collections import deque
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import logging
 from datetime import datetime, timezone
@@ -16,6 +18,8 @@ from livekit.api.access_token import AccessToken, VideoGrants
 import signal
 import traceback
 import os as _os
+
+from card_ocr import CardProcessingResult, CardProcessor
 
 try:
     import psutil
@@ -234,19 +238,76 @@ class LiveKitFaceRecognizer:
         # Reference + output
         self.output_dir = _os.path.abspath(_os.getenv("OUTPUT_DIR", "captured_faces"))
         _os.makedirs(self.output_dir, exist_ok=True)
+
+        env_reference_dir = _os.getenv("REFERENCE_DIR")
         self.reference_image_path = reference_image_path
+        if self.reference_image_path:
+            reference_dir = _os.path.dirname(self.reference_image_path)
+            reference_filename = _os.path.basename(self.reference_image_path)
+        else:
+            reference_dir = env_reference_dir or "reference"
+            reference_filename = _os.getenv("REFERENCE_FILENAME", "current.jpg")
+            self.reference_image_path = _os.path.join(reference_dir, reference_filename)
+
+        self.reference_dir = _os.path.abspath(reference_dir)
+        _os.makedirs(self.reference_dir, exist_ok=True)
+        self.reference_image_path = _os.path.abspath(self.reference_image_path)
+
+        self.card_reference_only = _os.getenv("CARD_REFERENCE_ONLY", "true").lower() == "true"
+        self._reference_from_card = False
+        self.manual_reset_path = Path(self.reference_dir) / "card_reset.json"
+        self._last_manual_reset_token: Optional[str] = None
+
+        try:
+            ocr_min_conf = float(_os.getenv("OCR_MIN_CONF", "70"))
+        except ValueError:
+            ocr_min_conf = 70.0
+        try:
+            min_card_area_ratio = float(_os.getenv("CARD_MIN_AREA_RATIO", "0.003"))
+        except ValueError:
+            min_card_area_ratio = 0.003
+        try:
+            min_focus_score = float(_os.getenv("CARD_MIN_FOCUS", "120"))
+        except ValueError:
+            min_focus_score = 120.0
+        try:
+            min_brightness = float(_os.getenv("CARD_MIN_BRIGHTNESS", "60"))
+        except ValueError:
+            min_brightness = 60.0
+        try:
+            max_brightness = float(_os.getenv("CARD_MAX_BRIGHTNESS", "210"))
+        except ValueError:
+            max_brightness = 210.0
+        try:
+            max_glare_ratio = float(_os.getenv("CARD_MAX_GLARE_RATIO", "0.12"))
+        except ValueError:
+            max_glare_ratio = 0.12
+
+        self.card_processor = CardProcessor(
+            reference_dir=self.reference_dir,
+            reference_filename=reference_filename,
+            lang=_os.getenv("OCR_LANGUAGE", "eng"),
+            min_confidence=ocr_min_conf,
+            min_card_area_ratio=min_card_area_ratio,
+            min_focus_score=min_focus_score,
+            min_brightness=min_brightness,
+            max_brightness=max_brightness,
+            max_glare_ratio=max_glare_ratio,
+        )
+        self.api_base_url = _os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
         self._ref_mtime = 0
         self._last_reload_check = 0.0
         
-        # Load reference if provided and exists
-        if reference_image_path and _os.path.exists(reference_image_path):
+        # Load reference if explicitly allowed (legacy behavior)
+        if not self.card_reference_only and self.reference_image_path and _os.path.exists(self.reference_image_path):
             try:
-                self.load_reference_face(reference_image_path)
-                logger.info(f"✅ Loaded initial reference from: {reference_image_path}")
+                if self.load_reference_face(self.reference_image_path):
+                    self._reference_from_card = False
+                    logger.info(f"✅ Loaded initial reference from: {self.reference_image_path}")
             except Exception as e:
                 logger.warning(f"⚠️ Could not load initial reference: {e}")
         else:
-            logger.info("⏳ Starting without reference image - waiting for upload from frontend")
+            logger.info("⏳ Card-first mode enabled - waiting for ID card capture")
         
         # Performance tuning
         self.downscale_width = self._parse_int_env("FRAME_DOWNSCALE_WIDTH", 640)
@@ -254,6 +315,9 @@ class LiveKitFaceRecognizer:
     def try_reload_reference(self):
         """Check for reference image updates or initial load"""
         try:
+            if self.card_reference_only:
+                # Card pipeline handles loading when complete
+                return
             loop = asyncio.get_event_loop()
             now = loop.time() if loop.is_running() else 0.0
             if now - self._last_reload_check < 1.0:
@@ -306,6 +370,50 @@ class LiveKitFaceRecognizer:
         """Check if reference encoding is available"""
         with self.ref_lock:
             return 'reference' in self.reference_encodings
+
+    def clear_reference(self) -> None:
+        with self.ref_lock:
+            self.reference_encodings.pop('reference', None)
+        self._reference_from_card = False
+        self._ref_mtime = 0
+
+    def check_manual_reset(self) -> Optional[CardProcessingResult]:
+        if not self.manual_reset_path.exists():
+            return None
+        try:
+            data = json.loads(self.manual_reset_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning(f"Failed to read manual reset request: {exc}")
+            return None
+
+        token = data.get("token") or data.get("requested_at")
+        if not token or token == self._last_manual_reset_token:
+            return None
+
+        self._last_manual_reset_token = token
+        reason = data.get("reason") or "manual_reset"
+        status = data.get("status") or "manual_reset"
+        message = data.get("message") or "Manual retry requested. Show the ID card again."
+        metadata = data.get("metadata") or {}
+        clear_reference = bool(data.get("clear_reference", True))
+
+        logger.info(f"🔄 Manual card reset requested (token={token})")
+        result = self.card_processor.reset(
+            clear_reference=clear_reference,
+            reason=reason,
+            status=status,
+            message=message,
+            metadata=metadata,
+            notify=True,
+        )
+        result.metadata['manual_reset_token'] = str(token)
+        if clear_reference:
+            self.clear_reference()
+            try:
+                self.reference_image_path = str(self.card_processor.reference_path)
+            except Exception:
+                pass
+        return result
 
     async def connect_to_room(self, url: str, token: str) -> bool:
         try:
@@ -400,25 +508,48 @@ class LiveKitFaceRecognizer:
             async for event in rtc.VideoStream(track):
                 if not event.frame:
                     continue
+                manual_reset_result = self.check_manual_reset()
+                if manual_reset_result:
+                    await self.handle_card_processing_result(manual_reset_result, participant=None)
+                    continue
                 self.try_reload_reference()
-                
-                # Skip processing if no reference available yet
-                if not self.has_reference():
-                    continue
-                    
-                bs = self.batch_state.get(track_sid)
-                if not bs or bs.get('frames_remaining', 0) <= 0:
-                    continue
+
                 frame = self.livekit_frame_to_opencv(event.frame)
                 if frame is None:
                     continue
-                
+
                 if frame.shape[1] > 640:
                     ratio = 640 / frame.shape[1]
                     new_h = int(frame.shape[0] * ratio)
                     proc_frame = cv2.resize(frame, (640, new_h), interpolation=cv2.INTER_LINEAR)
                 else:
                     proc_frame = frame
+                
+                # Attempt card processing pipeline if no reference is available yet
+                if not self.has_reference():
+                    loop = asyncio.get_event_loop()
+                    try:
+                        card_result = await loop.run_in_executor(
+                            self.frame_executor,
+                            self.card_processor.process_frame,
+                            frame,
+                        )
+                    except Exception as exc:
+                        logger.exception("Card processing failed")
+                        card_result = CardProcessingResult(
+                            status="error",
+                            message=str(exc),
+                            notify=True,
+                            error=str(exc),
+                        )
+
+                    if card_result:
+                        await self.handle_card_processing_result(card_result, participant)
+                    continue
+                    
+                bs = self.batch_state.get(track_sid)
+                if not bs or bs.get('frames_remaining', 0) <= 0:
+                    continue
                     
                 loop = asyncio.get_event_loop()
                 try:
@@ -558,6 +689,63 @@ class LiveKitFaceRecognizer:
                     await session.post(f"{api_url}/api/match", json=payload, timeout=3)
             except Exception:
                 pass
+
+    async def handle_card_processing_result(self, result: CardProcessingResult, participant: rtc.RemoteParticipant | None):
+        card_snapshot_url = None
+        text_url = None
+        reference_url = None
+
+        def _to_url(path_str: Optional[str]) -> Optional[str]:
+            if not path_str:
+                return None
+            try:
+                abs_path = _os.path.abspath(path_str)
+                rel = _os.path.relpath(abs_path, self.reference_dir)
+                return f"/reference/{rel.replace(_os.path.sep, '/')}"
+            except ValueError:
+                return None
+
+        card_snapshot_url = _to_url(result.card_snapshot_path)
+        text_url = _to_url(result.text_path)
+        reference_url = _to_url(result.reference_path)
+
+        if result.notify:
+            payload = {
+                'status': result.status,
+                'message': result.message,
+                'participant_id': participant.sid if participant else None,
+                'participant_name': participant.identity if participant else None,
+                'reference_ready': result.reference_ready,
+                'text_preview': result.text_preview,
+                'text_url': text_url,
+                'card_snapshot_url': card_snapshot_url,
+                'reference_url': reference_url,
+                'card_bbox': list(result.card_bbox) if result.card_bbox else None,
+                'frame_size': list(result.frame_size) if result.frame_size else None,
+                'error': result.error,
+                'card_polygon': [list(pt) for pt in result.card_polygon] if result.card_polygon else None,
+            }
+            if result.metadata:
+                payload.update(result.metadata)
+
+            try:
+                async with aiohttp.ClientSession() as session:
+                    await session.post(f"{self.api_base_url}/api/card-status", json=payload, timeout=3)
+            except Exception:
+                logger.debug("Failed to emit card status event", exc_info=True)
+
+        if result.reference_ready and result.reference_path:
+            try:
+                if self.load_reference_face(result.reference_path, is_reload=False):
+                    self.reference_image_path = result.reference_path
+                    try:
+                        self._ref_mtime = _os.path.getmtime(result.reference_path)
+                    except Exception:
+                        pass
+                    self._reference_from_card = True
+                    logger.info("📇 Reference loaded from ID card capture")
+            except Exception as exc:
+                logger.error(f"Failed loading reference from card capture: {exc}")
 
     async def emit_check_event(self, participant: rtc.RemoteParticipant, match_found: bool):
         try:

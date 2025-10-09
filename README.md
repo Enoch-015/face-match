@@ -36,10 +36,10 @@ No adaptive heuristics, no presence heartbeat, no frame skipping complexity—ju
 | File | Purpose |
 |------|---------|
 | `main.py` | Connects to LiveKit, orchestrates per‑track batch cycles, performs face detection (HOG via `face_recognition`), emits events. |
-| `api.py` | FastAPI app: serves frontend, issues LiveKit access tokens, accepts reference image uploads, relays Match & Check events over a WebSocket, serves saved snapshots. |
-| `frontend.html` | Minimal UI: upload reference, join room, display match snapshots & last check status per participant. |
+| `api.py` | FastAPI app: serves frontend, issues LiveKit access tokens, relays card/OCR status plus Match & Check events over a WebSocket, serves saved snapshots. |
+| `frontend.html` | Minimal UI: join room, guide ID card capture + OCR, show live card status, and display match snapshots & last check status per participant. |
 | `captured_faces/` | Folder where match snapshots are stored. |
-| `reference/current.jpg` | Hot‑reloadable reference face (overwritten by uploads). |
+| `reference/current.jpg` | Auto-generated face crop from the most recent ID card capture (overwritten by pipeline). |
 | `run.sh` | Convenience launcher: starts API then recognition loop. |
 
 ## 3. Event Payloads
@@ -116,7 +116,13 @@ Filesystem & API:
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `OUTPUT_DIR` | `captured_faces` | Snapshot save directory. |
-| `REFERENCE_IMAGE` | `reference/current.jpg` | Override static reference path (hot‑reload watched). |
+| `REFERENCE_IMAGE` | `reference/current.jpg` | Override static reference path (used only when card-first mode disabled). |
+| `CARD_REFERENCE_ONLY` | `true` | When `true`, ignore existing reference files and require ID card capture before matching. |
+| `CARD_MIN_AREA_RATIO` | `0.003` | Minimum fraction of the frame a detected card must occupy. Lower this if the UI never leaves “Waiting for ID card”. |
+| `CARD_MIN_FOCUS` | `120` | Minimum Laplacian focus score required before running OCR (higher = sharper). |
+| `CARD_MIN_BRIGHTNESS` | `60` | Minimum average grayscale brightness of the card crop. |
+| `CARD_MAX_BRIGHTNESS` | `210` | Maximum average brightness tolerated (higher values treated as overexposed). |
+| `CARD_MAX_GLARE_RATIO` | `0.12` | Maximum fraction of near-white pixels allowed to avoid glare washout. |
 | `API_BASE_URL` | `http://127.0.0.1:8000` | Where `main.py` posts `/api/match` & `/api/check`. |
 
 Memory watchdog (graceful stop thresholds):
@@ -150,7 +156,7 @@ Legacy (currently non‑impacting; scheduled for removal):
 Script steps:
 1. Start FastAPI (`api.py`) on `:8000`.
 2. Launch `main.py` recognition loop.
-3. Open `http://localhost:8000` in a browser, upload a reference image, join the room.
+3. Open `http://localhost:8000` in a browser, join the room, and follow the card capture guidance before presenting your live face.
 
 ### 6.4 Manual (Separate Terminals)
 ```
@@ -158,8 +164,15 @@ uvicorn api:app --host 0.0.0.0 --port 8000
 python main.py
 ```
 
-## 7. Reference Image Hot Reload
-Uploading a new image via the UI overwrites `reference/current.jpg`. The recognizer polls modification time (throttled to once per second) and reloads encodings atomically—no restart needed.
+## 7. Card Capture & OCR Flow
+When no reference face has been loaded yet, the recognizer prioritizes finding an ID card in the LiveKit video stream. Once a card is detected, the pipeline:
+
+1. Warps the card for a top-down view and persists a snapshot.
+2. Runs Tesseract OCR to extract text, saving the results to `reference/card_text.txt`.
+3. Detects the face printed on the card, crops/normalizes it, and writes `reference/current.jpg`.
+4. Loads the new reference encoding immediately—no manual uploads required.
+
+If you need to fall back to manual reference uploads, set `CARD_REFERENCE_ONLY=false` and restart; the legacy `/api/reference` endpoint will become active again.
 
 ## 8. Memory Management & Potential Stops
 
@@ -192,7 +205,7 @@ Graceful shutdown flag detected; breaking main loop
 ## 10. Troubleshooting
 | Symptom | Likely Cause | Action |
 |---------|-------------|--------|
-| No snapshots saved | Reference face not detected in uploaded image | Ensure exactly one clear frontal face in reference. |
+| No snapshots saved | ID card not yet captured / face not extracted | Hold the card steady within frame until the UI confirms reference ready. |
 | Repeated unsubscribes | No match in batches | Verify lighting, camera quality, tolerance (code default 0.5). |
 | Immediate exit on start | Missing `reference/current.jpg` | Upload reference before running or set `REFERENCE_IMAGE`. |
 | High CPU | Very frequent matches (short cycles) | Increase `HOLD_SECONDS`. |

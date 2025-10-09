@@ -26,7 +26,7 @@ pip install --upgrade pip setuptools wheel
 if command -v apt-get &> /dev/null; then
     echo "📚 Installing system dependencies..."
     sudo apt-get update
-    sudo apt-get install -y build-essential cmake libopenblas-dev liblapack-dev libx11-dev libgtk-3-dev python3-dev
+    sudo apt-get install -y build-essential cmake libopenblas-dev liblapack-dev libx11-dev libgtk-3-dev python3-dev libtesseract-dev tesseract-ocr tesseract-ocr-eng tesseract-ocr-ind
 fi
 
 # Install packages one by one to avoid conflicts
@@ -43,6 +43,8 @@ pip install dlib
 
 # Install face_recognition
 pip install face-recognition
+
+pip install pytesseract
 
 pip install livekit.api
 
